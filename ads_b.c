@@ -13,10 +13,11 @@ midaszhou@qq.com
 #include <stdlib.h>
 #include <string.h> //-strlen()
 #include <math.h> //-floor() pow() cos() acos()
-#include <sys/time.h> //-gettimeofday()
+#include <sys/time.h> //-gettimeofday(), setitimer()
 #include <time.h> // ctime(),time_t,
 #include <unistd.h> //-pipe() STDIN_FILENO STDOUT_FILENO
 #include <stdint.h> //uint32_t
+#include <fcntl.h> //fcntl()
 #include <signal.h> //signal()
 #include "cstring.h" //strmid(),trim_strfb(),str_findb()
 #include "adsb_crc.h" //adsb_crc24( )
@@ -24,6 +25,7 @@ midaszhou@qq.com
 
 static int PRINT_ON=0;
 HASH_TABLE* pHashTbl_CODE; //---hash for ICAO and CALLSIGN data save
+static char  str_FILE[]="/tmp/ads.data"; //--file to save data
 
 #define BUFSIZE 40
 #define CODE_BIN_LENGTH 112
@@ -77,11 +79,28 @@ static double mod(double x,double y)
 static void sighandler(int sig)
 {
   printf("Signal to exit......\n");
-  save_hash_data(pHashTbl_CODE);
+  save_hash_data(str_FILE,pHashTbl_CODE);
   release_hash_table(pHashTbl_CODE);
   exit(0); 
 }
 
+//-----------------  set timer -----------------
+void set_timer(void)
+{
+ struct itimerval itv;
+ itv.it_interval.tv_sec=1800; //--reload value, it will trigger the timer-handler every 0.5 hour
+ itv.it_interval.tv_usec=0;
+ itv.it_value.tv_sec=1800;  //--first set value
+ itv.it_value.tv_usec=0;
+ setitimer(ITIMER_REAL,&itv,NULL);
+}
+
+//------------  timer handler: save hash data ------------
+void timer_save_data(int sig)
+{
+  printf("\n   +++++++++++ timer handler: save hash data ++++++++++\n\n"); 
+  save_hash_data(str_FILE,pHashTbl_CODE);
+}
 
 
 /*=====================================================================
@@ -132,6 +151,7 @@ double dbl_DLon;// =360/int_NI
 struct timeval tv_even,tv_odd;//---time stamp
 time_t tm_record; //--record time 
 
+int stdflag; //STD_FILENO flag
 STRUCT_DATA ads_data;
 
 //------------- intterupt to exit signal handle --------
@@ -147,6 +167,9 @@ while( (int_ret_opt=getopt(argc,argv,"hd"))!=-1)
            printf("usage:  rtl_adsb | ads_b \n");   
            printf("         -h   help \n");   
            printf("         -d   printf debug information \n");   
+           printf("ICAO and corresponding CALL-SIGN will be saved every 30 minutes.");
+           printf("Please check /tmp/ads.data for saved data\n");
+           printf("Saved data is reloaded to hash table at start.")
            return;
        case 'd':
            printf("----- Debug information available now! \n");
@@ -162,23 +185,39 @@ while( (int_ret_opt=getopt(argc,argv,"hd"))!=-1)
 pHashTbl_CODE=create_hash_table(); //---init hash table
 
 //--------------------- restore hash data from file -------------
-restore_hash_data(pHashTbl_CODE);
+restore_hash_data(str_FILE,pHashTbl_CODE);
+
+//---------------------  set timer alarm signal ----------------
+signal(SIGALRM,timer_save_data);
+set_timer();
 
 //---------------------    set STDOUT buffer   ----------------------
 setvbuf(stdout,NULL,_IONBF,0); //--!!! set stdout no buff,or re-diret will fail
-
+//setvbuf(stdin,NULL,_IOLBF,0); //--!!! ???ineffective for read()
+//stdflag=fcntl(STDIN_FILENO,F_GETFL);//--get flag
+//fcntl(STDIN_FILENO,F_SETFL,stdflag&~O_NONBLOCK); // set BLOCK 
 //=======================  loop for message receiving and decoding =================
 //sleep(1);
 while(1)
 {
-memset(str_hexcode,'\0',sizeof(str_hexcode)); //--clear buffer str
-//usleep(500); //-- wait rtl_adbs to finish printing to STDOUT
-int_ret=read(STDIN_FILENO,str_hexcode,32); //--readin from stdin, it will stop at '\0'!!!!.  set iobuff=0 by the sender  the size must be 32 bytes.
-////////// try to fflush stdin; the data will remaind in buffer until new data enter to reflash   ///////////
-fflush(stdin);
+/*----------------!!!!!  check your hardware connection   !!!!!-------------------------------------------
+ If rtl dongle anntena is not well connected ,or there is too much noise and electronic interference,
+ the rtl_adsb data stream may seems very fast, but they are acturally all false signals.
+---------------------------------------------------------------------------------------------------------*/
+
+//usleep(100000);// necessary time for buf filling,  !!!put usleep here to ensure each continue loop will excute once.
+//memset(str_hexcode,'\0',sizeof(str_hexcode)); //--clear buffer str
+//--!!!!!!---- STDIN_FILENO  is no buffer I/O ----!!!!!!
+//int_ret=read(STDIN_FILENO,str_hexcode,32); //-32bits including *#/r/n,  read()--readin from stdin with NO BUFFER!, it will stop at '\0'!!!!.  set iobuff=0 by the sender  the size must be 32 bytes.
 //str_hexcode[int_ret]=0; //---add a NULL for string end
+fgets(str_hexcode,33,stdin); // fget will get defined length of chars or stop at '\n'(after '\n' is copied), whichever condition gets first, and put a string end '\0' .
+str_hexcode[32]='\0'; //-- add a string end token, NOT necessary??
+int_ret=strlen(str_hexcode); //---and /n from rtl_adsb also included
+////////// try to fflush stdin; the data will remaind in buffer until new data enter to reflash   ///////////
+//fflush(stdin);
 trim_strfb(str_hexcode); //--trim first char "*" in the string 
 if(PRINT_ON)printf("str_hexcode :%s   int_ret=%d \n",str_hexcode,int_ret); //--strlen(str) str must have a '/0' end
+if(int_ret<32)continue; //---not a valid code string, continue to loop.
 //printf("bin32_code: ");
 for(i=0;i<4;i++) //---convert CODE to bin type
  {
@@ -236,7 +275,7 @@ if(int_CODE_DF==17 && (int_CODE_TC>0 && int_CODE_TC<5))  //-------DF=17, TC=1to4
     str_CALL_SIGN[j+4]=LOOKUP_TABLE[tmp];  
   }
 
-  //printf("CALL SIGN: %s \n",str_CALL_SIGN);
+  if(PRINT_ON) printf("CALL SIGN: %s \n",str_CALL_SIGN);
   if(!str_findb(str_CALL_SIGN,'#')) //--It's valid only there is no '#' in the CALLSIGN
      {
 	 //printf("str_hexcode :%s   len=%d\n",str_hexcode,strlen(str_hexcode));
@@ -378,7 +417,7 @@ printf("FRAME: %s \n",(int_FRAME>0)?"Odd":"Even");
 printf("----------------  end of message --------------\n");
 */
 
-usleep(50000);
+//usleep(50000); // put usleep in the head of loop to avoid any leap of continue operation
  } /// end of for() or while()
 
 } //// end of main()

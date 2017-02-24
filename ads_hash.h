@@ -5,9 +5,9 @@
 #include <signal.h> //signal()
 #include <stdint.h> //uint32_t
 
-#define HASH_TABLE_SIZE 10
+#define HASH_TABLE_SIZE 61
 
-static char  str_FILE[]="/tmp/ads.data";
+//static char  str_FILE[]="/tmp/ads.data";
 
 
 /*=====================================================================
@@ -47,8 +47,11 @@ HASH_TABLE* create_hash_table()
 int get_hashtbl_itemnum(uint32_t int_ICAO24)
 {
  int tbnum;
- tbnum=((int_ICAO24&0xf0000000)>>24)+(int_ICAO24&0x0000000f);
+// tbnum=((int_ICAO24&0xf0000000)>>24)+(int_ICAO24&0x0000000f);
+ tbnum=(int_ICAO24&0x000000ff);
+// printf("Hash Table Item Num =%tbnum\n");
  return tbnum%HASH_TABLE_SIZE;
+
 }
 
 //---- find data in which link node    -----
@@ -164,7 +167,7 @@ int  count_hash_data(HASH_TABLE* pHashTbl)
 } 
 
 //=========================  save hash data to  file ==================
-void save_hash_data(HASH_TABLE* pHashTbl)
+void save_hash_data(char* str_FILE,HASH_TABLE* pHashTbl)
 {
  FILE *fp;
  int i;
@@ -196,7 +199,7 @@ void save_hash_data(HASH_TABLE* pHashTbl)
 }
 
 //----------------- restore hash data ----------------------
-void restore_hash_data(HASH_TABLE* pHashTbl)
+void restore_hash_data(char* str_FILE,HASH_TABLE* pHashTbl)
 {
  FILE *fp;
  int i;
